@@ -25,6 +25,7 @@ export default function TendersPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [sortBy, setSortBy] = useState("relevance");
   const [keywordFilter, setKeywordFilter] = useState("");
+  const [openOnly, setOpenOnly] = useState(true);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,7 +35,11 @@ export default function TendersPage() {
     setError(null);
     try {
       const [res, st, kw] = await Promise.all([
-        api.results({ sort: sortBy, keyword_id: keywordFilter || undefined }),
+        api.results({
+          sort: sortBy,
+          keyword_id: keywordFilter || undefined,
+          open_only: openOnly || undefined,
+        }),
         api.stats(),
         api.keywords(),
       ]);
@@ -46,7 +51,7 @@ export default function TendersPage() {
     } finally {
       setLoading(false);
     }
-  }, [sortBy, keywordFilter]);
+  }, [sortBy, keywordFilter, openOnly]);
 
   useEffect(() => {
     load();
@@ -115,6 +120,31 @@ export default function TendersPage() {
           <option value="deadline_desc">Closing date (latest)</option>
           <option value="recent">Recently added</option>
         </select>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={openOnly}
+          onClick={() => setOpenOnly((v) => !v)}
+          title="Show only tenders whose closing date hasn't passed"
+          className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
+            openOnly
+              ? "border-brand-500 bg-brand-50 text-brand-700"
+              : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+          }`}
+        >
+          <span
+            className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition ${
+              openOnly ? "bg-brand-600" : "bg-slate-300"
+            }`}
+          >
+            <span
+              className={`inline-block h-3 w-3 transform rounded-full bg-white transition ${
+                openOnly ? "translate-x-3.5" : "translate-x-0.5"
+              }`}
+            />
+          </span>
+          Can apply only
+        </button>
       </div>
 
       {error && (
@@ -138,9 +168,11 @@ export default function TendersPage() {
         </div>
       ) : shown.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white py-12 text-center text-sm text-slate-400">
-          {results.length === 0
-            ? "Your keywords are being searched — tenders will appear shortly."
-            : "No tenders match your filter."}
+          {results.length > 0
+            ? "No tenders match your filter."
+            : openOnly
+              ? "No open tenders right now. Turn off “Can apply only” to see closed ones too."
+              : "Your keywords are being searched — tenders will appear shortly."}
         </div>
       ) : (
         <div className="space-y-3">

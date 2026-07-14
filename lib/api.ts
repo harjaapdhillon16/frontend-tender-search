@@ -253,7 +253,7 @@ export const api = {
   deleteApplication: (id: number) =>
     req<{ ok: boolean }>(`/api/applications/${id}`, { method: "DELETE" }),
 
-  results: (params: Record<string, string | number | undefined> = {}) => {
+  results: (params: Record<string, string | number | boolean | undefined> = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== "") qs.set(k, String(v));
