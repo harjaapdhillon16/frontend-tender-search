@@ -52,6 +52,21 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
 }
 
 // ------------------------------------------------------------------- types
+export interface SellerProfile {
+  company_name?: string;
+  gst?: string;
+  pan?: string;
+  experience_years?: number | string;
+  certifications?: string;
+  capabilities?: string;
+  is_mse?: boolean;
+  contact_person?: string;
+  contact_email?: string;
+  contact_phone?: string;
+  city?: string;
+  notes?: string;
+}
+
 export interface User {
   id: number;
   email: string;
@@ -59,8 +74,52 @@ export interface User {
   is_admin: boolean;
   is_active: boolean;
   refresh_hours: number;
+  seller_profile: SellerProfile;
   created_at: string;
   last_login_at: string | null;
+}
+
+export interface ApplicationDraft {
+  cover_letter?: string;
+  technical_compliance?: { requirement: string; response: string }[];
+  eligibility_response?: { criterion: string; statement: string }[];
+  pricing_note?: string;
+  document_checklist?: string[];
+  emd_note?: string;
+  risks_or_gaps?: string[];
+  summary?: string;
+}
+
+export interface Application {
+  id: number;
+  result_id: number;
+  tender_title: string;
+  tender_reference: string | null;
+  tender_url: string | null;
+  status: string;
+  inputs: Record<string, unknown>;
+  draft: ApplicationDraft;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RequiredDocField {
+  name: string;
+  label: string;
+  type: "text" | "textarea" | "date" | "number";
+  required: boolean;
+  prefill?: string | null;
+  placeholder?: string | null;
+  help?: string | null;
+}
+
+export interface RequiredDocument {
+  id: string;
+  title: string;
+  category: "generate" | "upload";
+  why?: string;
+  fields?: RequiredDocField[];
+  upload_hint?: string;
 }
 
 export interface Keyword {
@@ -130,6 +189,25 @@ export interface Stats {
   enriched: number;
 }
 
+export interface StoredDocument {
+  id: number;
+  name: string;
+  category: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentStorage {
+  documents: StoredDocument[];
+  used_bytes: number;
+  quota_bytes: number;
+  max_file_bytes: number;
+}
+
 // ----------------------------------------------------------------- endpoints
 export const api = {
   login: (email: string, password: string) =>
@@ -153,8 +231,27 @@ export const api = {
     req<{ ok: boolean }>(`/api/keywords/${id}`, { method: "DELETE" }),
 
   getSettings: () => req<User>("/api/settings"),
-  updateSettings: (patch: { name?: string; refresh_hours?: number }) =>
-    req<User>("/api/settings", { method: "PATCH", body: JSON.stringify(patch) }),
+  updateSettings: (patch: {
+    name?: string;
+    refresh_hours?: number;
+    seller_profile?: SellerProfile;
+  }) => req<User>("/api/settings", { method: "PATCH", body: JSON.stringify(patch) }),
+
+  applications: () => req<Application[]>("/api/applications"),
+  getApplicationForResult: (resultId: number) =>
+    req<Application>(`/api/results/${resultId}/application`),
+  requiredDocuments: (appId: number, refresh = false) =>
+    req<{ documents: RequiredDocument[] }>(
+      `/api/applications/${appId}/required-documents${refresh ? "?refresh=true" : ""}`,
+      { method: "POST" },
+    ),
+  updateApplication: (id: number, patch: Partial<Application>) =>
+    req<Application>(`/api/applications/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteApplication: (id: number) =>
+    req<{ ok: boolean }>(`/api/applications/${id}`, { method: "DELETE" }),
 
   results: (params: Record<string, string | number | undefined> = {}) => {
     const qs = new URLSearchParams();
@@ -167,7 +264,55 @@ export const api = {
   stats: () => req<Stats>("/api/stats"),
   enrich: (id: number) =>
     req<ResultDetail>(`/api/results/${id}/enrich`, { method: "POST" }),
+
+  documents: () => req<DocumentStorage>("/api/documents"),
+  updateDocument: (
+    id: number,
+    patch: { name?: string; category?: string; notes?: string },
+  ) =>
+    req<StoredDocument>(`/api/documents/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteDocument: (id: number) =>
+    req<{ ok: boolean }>(`/api/documents/${id}`, { method: "DELETE" }),
 };
+
+// Upload one document (multipart — the browser sets the Content-Type boundary).
+export async function uploadDocument(
+  file: File,
+  meta: { name?: string; category?: string; notes?: string } = {},
+): Promise<StoredDocument> {
+  const form = new FormData();
+  form.append("file", file);
+  if (meta.name) form.append("name", meta.name);
+  if (meta.category) form.append("category", meta.category);
+  if (meta.notes) form.append("notes", meta.notes);
+
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/api/documents`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  if (res.status === 401) {
+    clearToken();
+    if (typeof window !== "undefined" && !location.pathname.startsWith("/login")) {
+      location.href = "/login";
+    }
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) throw new Error(parseError(await res.text()));
+  return res.json();
+}
+
+// Download a stored document with its original filename.
+export function downloadStoredDocument(doc: StoredDocument): Promise<void> {
+  return downloadAuthed(`/api/documents/${doc.id}/download`, doc.filename);
+}
 
 // ------------------------------------------------------ streaming enrichment
 export interface StreamHandlers {
@@ -229,4 +374,115 @@ function parseSseBlock(block: string): { event: string; data: unknown } | null {
   } catch {
     return { event, data: dataRaw };
   }
+}
+
+// ------------------------------------------------ application draft streaming
+export interface DraftHandlers {
+  onDelta: (text: string) => void;
+  onDone: (application: Application) => void;
+  onError: (message: string) => void;
+}
+
+export async function draftApplicationStream(
+  resultId: number,
+  inputs: Record<string, unknown>,
+  handlers: DraftHandlers,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE}/api/results/${resultId}/application/draft/stream`,
+      { method: "POST", headers: authHeaders(), body: JSON.stringify({ inputs }) },
+    );
+  } catch (e) {
+    handlers.onError(String(e));
+    return;
+  }
+  if (res.status === 401) {
+    clearToken();
+    if (typeof window !== "undefined") location.href = "/login";
+    return;
+  }
+  if (!res.ok || !res.body) {
+    handlers.onError(`${res.status} ${res.statusText}`);
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const evt = parseSseBlock(block);
+      if (!evt) continue;
+      if (evt.event === "delta") handlers.onDelta(evt.data as string);
+      else if (evt.event === "done") handlers.onDone(evt.data as Application);
+      else if (evt.event === "error") handlers.onError(String(evt.data));
+    }
+  }
+}
+
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadAuthed(path: string, filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(parseError(await res.text()));
+  saveBlob(await res.blob(), filename);
+}
+
+async function downloadAuthedPost(
+  path: string,
+  body: unknown,
+  filename: string,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(parseError(await res.text()));
+  saveBlob(await res.blob(), filename);
+}
+
+// Generate + download one required document as a filled PDF.
+export function downloadDocumentPdf(
+  appId: number,
+  docId: string,
+  answers: Record<string, string>,
+): Promise<void> {
+  return downloadAuthedPost(
+    `/api/applications/${appId}/documents/${docId}/pdf`,
+    { answers },
+    `${docId}_${appId}.pdf`,
+  );
+}
+
+// Download the drafted application as a readable text document.
+export function downloadApplicationDoc(appId: number): Promise<void> {
+  return downloadAuthed(
+    `/api/applications/${appId}/document`,
+    `application_${appId}.txt`,
+  );
+}
+
+// Download the optional local browser-automation companion (advanced).
+export function downloadApplyCompanion(appId: number): Promise<void> {
+  return downloadAuthed(
+    `/api/applications/${appId}/apply-script`,
+    `gem_apply_${appId}.py`,
+  );
 }

@@ -5,6 +5,7 @@ import { ContractDetails as CD, enrichStream, Result } from "@/lib/api";
 import { partialParse } from "@/lib/partialJson";
 import { ScorePill, SourcePill, TypePill } from "./badges";
 import ContractDetails from "./ContractDetails";
+import ApplyModal from "./ApplyModal";
 
 function domainOf(url: string): string {
   try {
@@ -54,6 +55,11 @@ export default function ResultCard({ result }: { result: Result }) {
   const [details, setDetails] = useState<CD | null>(null);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [applyOpen, setApplyOpen] = useState(false);
+
+  // Open for application while the submission window hasn't closed.
+  const isOpen =
+    !result.deadline_at || new Date(result.deadline_at).getTime() > Date.now();
 
   // Only records with an actual source document can be enriched; others show
   // just the source link. If enrichment discovers there's no usable document,
@@ -169,6 +175,14 @@ export default function ResultCard({ result }: { result: Result }) {
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
+        {isOpen && (
+          <button
+            onClick={() => setApplyOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-brand-700"
+          >
+            ✦ Apply →
+          </button>
+        )}
         {result.has_document && result.file_url && (
           <a
             href={result.file_url}
@@ -230,6 +244,10 @@ export default function ResultCard({ result }: { result: Result }) {
             </div>
           )}
         </div>
+      )}
+
+      {applyOpen && (
+        <ApplyModal result={result} onClose={() => setApplyOpen(false)} />
       )}
     </div>
   );
